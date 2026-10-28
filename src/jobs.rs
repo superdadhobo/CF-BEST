@@ -1,0 +1,473 @@
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
+
+use tokio::runtime::Runtime;
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::core::daily::{self, DailyConfig, DailyResult};
+use crate::core::http;
+use crate::core::ip;
+use crate::core::model::{ScanHit, SpeedRecord, VerifyRecord, VlessNode};
+use crate::core::probe::{self, ProbeConfig, ProbeOutcome};
+use crate::core::scan::{self, ScanConfig, ScanOutcome};
+use crate::core::speed::{self, SpeedConfig, SpeedOutcome};
+use crate::core::storage::{self, AppPaths};
+use crate::core::verify::{self, VerifyOutcome, VerifyTarget};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobKind {
+    Scan,
+    Speed,
+    Verify,
+    Daily,
+    Asn,
+    Pool,
+    Subscription,
+    PoolRebuild,
+    Probe,
+}
+
+impl JobKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            JobKind::Scan => "扫描",
+            JobKind::Speed => "测速",
+            JobKind::Verify => "可用性验证",
+            JobKind::Daily => "每日优选",
+            JobKind::Asn => "ASN 查询",
+            JobKind::Pool => "官方候选池",
+            JobKind::Subscription => "订阅",
+            JobKind::PoolRebuild => "段池重建",
+            JobKind::Probe => "段池粗测",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum JobEvent {
+    ScanProgress {
+        done: usize,
+        total: usize,
+        hits: usize,
+        elapsed_ms: u64,
+    },
+    ScanHit(ScanHit),
+    ScanDone(ScanOutcome),
+    SpeedPhase {
+        name: &'static str,
+        total: usize,
+    },
+    SpeedProgress {
+        phase: &'static str,
+        done: usize,
+        total: usize,
+        throttled: u32,
+        current: Option<String>,
+    },
+    SpeedRecord(SpeedRecord),
+    SpeedWarning(String),
+    SpeedDone(SpeedOutcome),
+    VerifyProgress {
+        done: usize,
+        total: usize,
+        current: String,
+    },
+    VerifyRecord(VerifyRecord),
+    VerifyDone(VerifyOutcome),
+    DailyStage {
+        stage: String,
+        detail: String,
+    },
+    DailyProgress {
+        stage: String,
+        done: usize,
+        total: usize,
+        label: String,
+    },
+    DailyLog(String),
+    DailyDone(DailyResult),
+    AsnReady {
+        prefixes: Vec<String>,
+        source: String,
+    },
+    PoolReady {
+        ips: Vec<String>,
+        source: String,
+    },
+    SubscriptionReady {
+        nodes: Vec<VlessNode>,
+        source: String,
+    },
+    PoolRebuilt {
+        count: usize,
+        source: String,
+    },
+    ProbePhase {
+        name: &'static str,
+        total: usize,
+    },
+    ProbeProgress {
+        phase: &'static str,
+        done: usize,
+        total: usize,
+        current: String,
+    },
+    ProbeWarning(String),
+    ProbeDone(ProbeOutcome),
+    Error(String),
+    Done(JobKind),
+    AuxDone,
+}
+
+pub fn runtime() -> &'static Runtime {
+    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        let workers = std::thread::available_parallelism()
+            .map(|count| count.get().min(8))
+            .unwrap_or(4);
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(workers)
+            .thread_name("cf-best-net")
+            .enable_all()
+            .build()
+            .expect("创建 Tokio 运行时失败")
+    })
+}
+
+fn spawn_guarded<Fut>(kind: JobKind, tx: UnboundedSender<JobEvent>, future: Fut)
+where
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    runtime().spawn(async move {
+        let supervisor = tx.clone();
+        let handle = tokio::spawn(future);
+        if let Err(err) = handle.await {
+            let message = format!("{}任务异常：{err}", kind.label());
+            storage::log_line(&message);
+            let _ = supervisor.send(JobEvent::Error(message));
+        }
+        let _ = supervisor.send(JobEvent::Done(kind));
+    });
+}
+
+fn spawn_aux<Fut>(kind: JobKind, tx: UnboundedSender<JobEvent>, future: Fut)
+where
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    runtime().spawn(async move {
+        let supervisor = tx.clone();
+        let handle = tokio::spawn(future);
+        if let Err(err) = handle.await {
+            let message = format!("{}任务异常：{err}", kind.label());
+            storage::log_line(&message);
+            let _ = supervisor.send(JobEvent::Error(message));
+        }
+        let _ = supervisor.send(JobEvent::AuxDone);
+    });
+}
+
+pub fn spawn_scan(config: ScanConfig, tx: UnboundedSender<JobEvent>, cancel: Arc<AtomicBool>) {
+    storage::log_line(&format!(
+        "开始扫描：{} 个探测，并发 {}",
+        config.targets.len(),
+        config.concurrency
+    ));
+    spawn_guarded(JobKind::Scan, tx.clone(), async move {
+        let tx = tx;
+        let outcome = scan::execute(&config, cancel, |event| match event {
+            scan::ScanEvent::Progress {
+                done,
+                total,
+                hits,
+                elapsed,
+            } => {
+                let _ = tx.send(JobEvent::ScanProgress {
+                    done,
+                    total,
+                    hits,
+                    elapsed_ms: elapsed.as_millis() as u64,
+                });
+            }
+            scan::ScanEvent::Hit(hit) => {
+                let _ = tx.send(JobEvent::ScanHit(hit));
+            }
+        })
+        .await;
+        storage::log_line(&format!(
+            "扫描结束：命中 {}/{}，失败 {}，耗时 {:.1}s{}",
+            outcome.hits.len(),
+            outcome.total,
+            outcome.failed,
+            outcome.elapsed.as_secs_f64(),
+            if outcome.stopped {
+                "（已停止）"
+            } else {
+                ""
+            }
+        ));
+        let _ = tx.send(JobEvent::ScanDone(outcome));
+    });
+}
+
+pub fn spawn_speed(config: SpeedConfig, tx: UnboundedSender<JobEvent>, cancel: Arc<AtomicBool>) {
+    storage::log_line(&format!(
+        "开始测速：{} 个候选（串行）",
+        config.targets.len()
+    ));
+    spawn_guarded(JobKind::Speed, tx.clone(), async move {
+        let tx = tx;
+        let outcome = speed::execute(&config, cancel, |event| match event {
+            speed::SpeedEvent::Phase { name, total } => {
+                let _ = tx.send(JobEvent::SpeedPhase { name, total });
+            }
+            speed::SpeedEvent::Progress {
+                phase,
+                done,
+                total,
+                throttled,
+                current,
+            } => {
+                let _ = tx.send(JobEvent::SpeedProgress {
+                    phase,
+                    done,
+                    total,
+                    throttled,
+                    current,
+                });
+            }
+            speed::SpeedEvent::Record(record) => {
+                let _ = tx.send(JobEvent::SpeedRecord(record));
+            }
+            speed::SpeedEvent::Warning(warning) => {
+                let _ = tx.send(JobEvent::SpeedWarning(warning));
+            }
+        })
+        .await;
+        storage::log_line(&format!(
+            "测速结束：{} 个有效，{} 次 429，耗时 {:.1}s{}",
+            outcome.records.len(),
+            outcome.throttled,
+            outcome.elapsed.as_secs_f64(),
+            if outcome.stopped {
+                "（已停止）"
+            } else {
+                ""
+            }
+        ));
+        let _ = tx.send(JobEvent::SpeedDone(outcome));
+    });
+}
+
+pub fn spawn_verify(
+    targets: Vec<VerifyTarget>,
+    wait: Duration,
+    tx: UnboundedSender<JobEvent>,
+    cancel: Arc<AtomicBool>,
+) {
+    storage::log_line(&format!("开始可用性验证：{} 个目标", targets.len()));
+    spawn_guarded(JobKind::Verify, tx.clone(), async move {
+        let tx = tx;
+        let outcome = verify::execute(&targets, wait, cancel, |event| match event {
+            verify::VerifyEvent::Progress {
+                done,
+                total,
+                current,
+            } => {
+                let _ = tx.send(JobEvent::VerifyProgress {
+                    done,
+                    total,
+                    current,
+                });
+            }
+            verify::VerifyEvent::Record(record) => {
+                let _ = tx.send(JobEvent::VerifyRecord(record));
+            }
+        })
+        .await;
+        storage::log_line(&format!(
+            "可用性验证结束：{}/{} 通过，耗时 {:.1}s{}",
+            outcome.passed,
+            targets.len(),
+            outcome.elapsed.as_secs_f64(),
+            if outcome.stopped {
+                "（已停止）"
+            } else {
+                ""
+            }
+        ));
+        let _ = tx.send(JobEvent::VerifyDone(outcome));
+    });
+}
+
+pub fn spawn_daily(config: DailyConfig, tx: UnboundedSender<JobEvent>, cancel: Arc<AtomicBool>) {
+    storage::log_line("开始每日优选");
+    spawn_guarded(JobKind::Daily, tx.clone(), async move {
+        let tx = tx;
+        let result = daily::execute(config, cancel, |event| match event {
+            daily::DailyEvent::Stage { stage, detail } => {
+                let _ = tx.send(JobEvent::DailyStage { stage, detail });
+            }
+            daily::DailyEvent::Progress {
+                stage,
+                done,
+                total,
+                label,
+            } => {
+                let _ = tx.send(JobEvent::DailyProgress {
+                    stage,
+                    done,
+                    total,
+                    label,
+                });
+            }
+            daily::DailyEvent::Log(line) => {
+                let _ = tx.send(JobEvent::DailyLog(line));
+            }
+        })
+        .await;
+        match result {
+            Ok(result) => {
+                storage::log_line(&format!(
+                    "每日优选结束：Top {}，扫描命中 {}，耗时 {:.1}s{}",
+                    result.top.len(),
+                    result.summary.hits,
+                    result.elapsed.as_secs_f64(),
+                    if result.stopped {
+                        "（已停止）"
+                    } else {
+                        ""
+                    }
+                ));
+                let _ = tx.send(JobEvent::DailyDone(result));
+            }
+            Err(err) => {
+                let message = format!("每日优选失败：{err:#}");
+                storage::log_line(&message);
+                let _ = tx.send(JobEvent::Error(message));
+            }
+        }
+    });
+}
+
+fn send_aux_error(tx: &UnboundedSender<JobEvent>, kind: JobKind, err: anyhow::Error) {
+    let message = format!("{}失败：{err:#}", kind.label());
+    storage::log_line(&message);
+    let _ = tx.send(JobEvent::Error(format!("{}失败：{err:#}", kind.label())));
+}
+
+pub fn spawn_asn_fetch(asn: String, tx: UnboundedSender<JobEvent>) {
+    spawn_aux(JobKind::Asn, tx.clone(), async move {
+        match http::fetch_asn_prefixes(&asn, Duration::from_secs(30)).await {
+            Ok((prefixes, source)) => {
+                let _ = tx.send(JobEvent::AsnReady {
+                    prefixes,
+                    source: format!("{asn} · {source}"),
+                });
+            }
+            Err(err) => send_aux_error(&tx, JobKind::Asn, err),
+        }
+    });
+}
+
+pub fn spawn_official_pool(total: usize, tx: UnboundedSender<JobEvent>) {
+    spawn_aux(JobKind::Pool, tx.clone(), async move {
+        let (cidrs, source) = http::fetch_official_cidrs(Duration::from_secs(20)).await;
+        match ip::build_official_pool(&cidrs, total) {
+            Ok(pool) => {
+                let _ = tx.send(JobEvent::PoolReady {
+                    ips: pool,
+                    source: format!("{source} · {} 个段", cidrs.len()),
+                });
+            }
+            Err(err) => send_aux_error(&tx, JobKind::Pool, anyhow::anyhow!(err)),
+        }
+    });
+}
+
+pub fn spawn_subscription(url: String, tx: UnboundedSender<JobEvent>) {
+    spawn_aux(JobKind::Subscription, tx.clone(), async move {
+        match http::fetch_subscription(&url, Duration::from_secs(20)).await {
+            Ok(nodes) => {
+                let ws_count = nodes
+                    .iter()
+                    .filter(|node| node.transport.eq_ignore_ascii_case("ws"))
+                    .count();
+                let _ = tx.send(JobEvent::SubscriptionReady {
+                    source: format!("{} 个节点（{} 个 ws）", nodes.len(), ws_count),
+                    nodes,
+                });
+            }
+            Err(err) => send_aux_error(&tx, JobKind::Subscription, err),
+        }
+    });
+}
+
+pub fn spawn_pool_rebuild(paths: AppPaths, tx: UnboundedSender<JobEvent>) {
+    spawn_aux(JobKind::PoolRebuild, tx.clone(), async move {
+        let result = async {
+            let (prefixes, source) =
+                http::fetch_asn_prefixes("AS906", Duration::from_secs(30)).await?;
+            let segments =
+                ip::split_to_24(&prefixes, 200_000).map_err(|err| anyhow::anyhow!(err))?;
+            storage::save_pool(&paths, &segments)?;
+            Ok::<(usize, String), anyhow::Error>((segments.len(), source))
+        }
+        .await;
+        match result {
+            Ok((count, source)) => {
+                let _ = tx.send(JobEvent::PoolRebuilt { count, source });
+            }
+            Err(err) => send_aux_error(&tx, JobKind::PoolRebuild, err),
+        }
+    });
+}
+
+pub fn spawn_probe(config: ProbeConfig, tx: UnboundedSender<JobEvent>, cancel: Arc<AtomicBool>) {
+    storage::log_line(&format!(
+        "开始段池粗测：{} 段，每段 {} 个抽样，并发 {}",
+        config.segments.len(),
+        config.samples,
+        config.concurrency
+    ));
+    spawn_guarded(JobKind::Probe, tx.clone(), async move {
+        let tx = tx;
+        let outcome = probe::execute(&config, cancel, |event| match event {
+            probe::ProbeEvent::Phase { name, total } => {
+                let _ = tx.send(JobEvent::ProbePhase { name, total });
+            }
+            probe::ProbeEvent::Progress {
+                phase,
+                done,
+                total,
+                current,
+            } => {
+                let _ = tx.send(JobEvent::ProbeProgress {
+                    phase,
+                    done,
+                    total,
+                    current,
+                });
+            }
+            probe::ProbeEvent::Warning(line) => {
+                storage::log_line(&line);
+                let _ = tx.send(JobEvent::ProbeWarning(line));
+            }
+        })
+        .await;
+        storage::log_line(&format!(
+            "段池粗测结束：握手命中 {} 个地址，{} 段完成吞吐，耗时 {:.1}s{}",
+            outcome.handshake_hits,
+            outcome.throughput_tested,
+            outcome.elapsed.as_secs_f64(),
+            if outcome.stopped {
+                "（已停止）"
+            } else {
+                ""
+            }
+        ));
+        let _ = tx.send(JobEvent::ProbeDone(outcome));
+    });
+}

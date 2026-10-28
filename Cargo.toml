@@ -1,0 +1,57 @@
+[package]
+name = "cf-best"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Cloudflare 优选 IP 桌面工作台：扫描、测速、可用性验证与每日自动优选"
+license = "MIT"
+repository = "https://github.com/wintopic/CF-BEST"
+readme = "README.md"
+keywords = ["cloudflare", "ip", "speedtest", "gpui", "desktop"]
+categories = ["network-programming", "gui"]
+publish = false
+
+[[bin]]
+name = "CFBest"
+path = "src/main.rs"
+
+[dependencies]
+gpui = "0.2.2"
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+rand = "0.9"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+unicode-segmentation = "1"
+uuid = "1"
+
+# macOS：着色器在启动时编译，构建不依赖 Xcode 的 Metal 工具链。
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true

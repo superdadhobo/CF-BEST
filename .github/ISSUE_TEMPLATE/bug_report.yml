@@ -1,0 +1,47 @@
+name: 问题反馈 / Bug report
+description: 应用出错、崩溃或结果不符合预期
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！**请不要粘贴订阅链接、UUID 或节点地址。**
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本
+      description: 状态栏右下角的版本号，例如 v0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 系统
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS（Apple 芯片）
+        - macOS（Intel）
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 期望的结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开「扫描 IP」
+        2. 粘贴 104.16.0.0/24
+        3. 点击「开始扫描」
+  - type: textarea
+    id: log
+    attributes:
+      label: 运行日志
+      description: 数据目录下 runtime.log 的相关内容（侧栏底部「数据目录」可打开）
+      render: text

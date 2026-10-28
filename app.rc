@@ -1,0 +1,40 @@
+/*
+ * App icon cloud glyph: Font Awesome Free 7.3.1 by @fontawesome.
+ * License: https://fontawesome.com/license/free
+ */
+#pragma code_page(65001)
+#include <winver.h>
+
+#define STR2(x) #x
+#define STR(x) STR2(x)
+#define VER_STRING STR(VER_MAJOR) "." STR(VER_MINOR) "." STR(VER_PATCH)
+
+1 ICON "assets/app-icon.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION VER_MAJOR, VER_MINOR, VER_PATCH, 0
+PRODUCTVERSION VER_MAJOR, VER_MINOR, VER_PATCH, 0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "AIGCFREE"
+            VALUE "FileDescription", "CF Best - Cloudflare 优选工作台"
+            VALUE "FileVersion", VER_STRING
+            VALUE "InternalName", "CFBest"
+            VALUE "OriginalFilename", "CFBest.exe"
+            VALUE "ProductName", "CF Best"
+            VALUE "ProductVersion", VER_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END
