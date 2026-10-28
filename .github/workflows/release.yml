@@ -118,7 +118,30 @@ jobs:
     if: github.ref_type == 'tag'
     needs: [version, windows, macos]
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
+      - uses: actions/checkout@v5
+      - name: Release notes
+        # CHANGELOG.md 中本版本的段落 + .github/release-notes.md 的下载说明。
+        run: |
+          awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found && !/^\[[^]]+\]: / { print }
+          ' CHANGELOG.md > changes.md
+          if ! grep -q '[^[:space:]]' changes.md; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os
+          changes = open("changes.md", encoding="utf-8").read().strip()
+          notes = open(".github/release-notes.md", encoding="utf-8").read()
+          notes = notes.replace("{{CHANGES}}", changes).replace("{{VERSION}}", os.environ["VERSION"])
+          open("notes.md", "w", encoding="utf-8").write(notes)
+          PY
+          cat notes.md
       - uses: actions/download-artifact@v5
         with:
           path: dist
@@ -129,5 +152,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           name: CF Best v${{ needs.version.outputs.version }}
-          generate_release_notes: true
+          body_path: notes.md
           files: dist/*
