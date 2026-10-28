@@ -304,9 +304,9 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "windows")]
 #[cfg(all(target_os = "windows", debug_assertions))]
 pub use imp::post_left_click;
+#[cfg(target_os = "windows")]
 pub use imp::{Tray, hide_main_window, main_window_hidden};
 
 /// 为当前窗口创建托盘图标；非 Windows 平台返回 `None`。

@@ -20,7 +20,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: version
         shell: bash
         run: |
@@ -39,7 +39,7 @@ jobs:
     needs: version
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
@@ -49,7 +49,7 @@ jobs:
         run: |
           mkdir dist
           cp target/release/CFBest.exe "dist/CFBest-${{ needs.version.outputs.version }}-windows-x64.exe"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: windows
           path: dist/*
@@ -61,7 +61,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
@@ -108,7 +108,7 @@ jobs:
           hdiutil create -volname "CF Best" -srcfolder dist -ov -format UDZO \
             "CFBest-${VERSION}-macos-universal.dmg"
           mkdir out && mv "CFBest-${VERSION}-macos-universal.dmg" out/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: macos
           path: out/*
@@ -119,7 +119,7 @@ jobs:
     needs: [version, windows, macos]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
