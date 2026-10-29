@@ -2,7 +2,7 @@
 
 本项目的所有重要改动都记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [0.2.0] - 2026-10-29
 
 ### 新增
 
@@ -30,5 +30,5 @@
 - 托盘常驻、任务栏进度、开机自启（Windows）；macOS universal 安装包。
 - 4 种主题风格 × 浅色 / 深色 / 跟随系统，界面缩放，全键盘操作。
 
-[未发布]: https://github.com/wintopic/CF-BEST/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/wintopic/CF-BEST/releases/tag/v0.2.0
 [0.1.0]: https://github.com/wintopic/CF-BEST/releases/tag/v0.1.0

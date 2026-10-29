@@ -1,8 +1,14 @@
 name: Release
 
-# 推送 v* 标签（如 v0.2.0）时构建 Windows 与 macOS 安装包并发布到 GitHub Releases。
-# 也可以在 Actions 页面手动运行，只构建产物而不发布。
+# main 上的 CI 通过后，如果 Cargo.toml 的版本号还没发布过，就构建 Windows 与 macOS 安装包，
+# 打上 v<版本号> 标签并发布到 GitHub Releases；这个版本已经发布过则什么也不做。
+# 发版只需改版本号并在 CHANGELOG.md 写好这一版的段落。手动推送 v* 标签、在 Actions 页面
+# 手动运行同样会在版本未发布时发布（手动运行遇到已发布的版本只构建产物）。
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -10,36 +16,66 @@ on:
 permissions:
   contents: write
 
+# 同一时间只跑一个发布：推 main 与推标签同时触发时，后一个会看到版本已发布而跳过。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
+  # workflow_run 在默认分支的最新提交上运行，要构建的是 CI 刚检查通过的那个提交。
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
   version:
     name: Resolve version
+    # 只认 main 上推送触发且通过的 CI；fork 的 PR 即使分支也叫 main，也不会走到发布。
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_SHA }}
       - id: version
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            tag="${GITHUB_REF_NAME#v}"
-            if [[ "$tag" != "$crate" ]]; then
-              echo "::error::Tag v$tag does not match Cargo.toml version $crate"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "${GITHUB_REF_NAME#v}" != "$crate" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $crate"
+            exit 1
+          fi
+          if gh release view "v$crate" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "v$crate is already released, nothing to publish"
+            publish=false
+          else
+            # 更新说明取自 CHANGELOG.md：缺这一版的段落就别等构建完才失败。
+            if ! grep -qF "## [$crate]" CHANGELOG.md; then
+              echo "::error::CHANGELOG.md has no section for $crate"
               exit 1
             fi
+            publish=true
           fi
           echo "version=$crate" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
   windows:
     name: Windows x64
     needs: version
+    if: needs.version.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_SHA }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
@@ -57,11 +93,14 @@ jobs:
   macos:
     name: macOS universal
     needs: version
+    if: needs.version.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_SHA }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
@@ -115,13 +154,15 @@ jobs:
 
   publish:
     name: Publish release
-    if: github.ref_type == 'tag'
+    if: needs.version.outputs.publish == 'true'
     needs: [version, windows, macos]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_SHA }}
       - name: Release notes
         # CHANGELOG.md 中本版本的段落 + .github/release-notes.md 的下载说明。
         run: |
@@ -149,8 +190,12 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      # 标签由这里在构建的提交上创建（GITHUB_TOKEN 创建的标签不会再触发本工作流）。
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ env.RELEASE_SHA }}
           name: CF Best v${{ needs.version.outputs.version }}
           body_path: notes.md
           files: dist/*
+          make_latest: "true"

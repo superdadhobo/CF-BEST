@@ -45,19 +45,13 @@ cargo run --release  # 接近发布版的性能
 
 ## 发布新版本
 
-发布由 GitHub Actions 自动完成（[`release.yml`](.github/workflows/release.yml)）：
+发布由 GitHub Actions 自动完成（[`release.yml`](.github/workflows/release.yml)），不用手动打标签：
 
-1. 修改 `Cargo.toml` 中的 `version`，运行一次 `cargo build` 更新 `Cargo.lock`，并在 [CHANGELOG.md](CHANGELOG.md) 中记录改动。
-2. 提交后打上同版本号的标签并推送：
+1. 修改 `Cargo.toml` 中的 `version`，运行一次 `cargo build` 更新 `Cargo.lock`，并在 [CHANGELOG.md](CHANGELOG.md) 中把这一版写成 `## [x.y.z] - 日期` 的段落（发布页的更新说明取自这里）。
+2. 提交并推送到 `main`。
+3. `main` 上的 CI 通过后，Release 工作流发现这个版本号还没有发布过，就会分别构建 Windows x64 的 `.exe` 与 macOS universal 的 `.dmg`，生成 `SHA256SUMS.txt`，在这个提交上打 `vx.y.z` 标签并发布 GitHub Release。应用内的检查更新随即能看到新版本。
 
-   ```bash
-   git tag v0.2.0
-   git push origin main --tags
-   ```
-
-3. 工作流会校验标签与 `Cargo.toml` 的版本一致，分别构建 Windows x64 的 `.exe` 与 macOS universal 的 `.dmg`，生成 `SHA256SUMS.txt`，并创建 GitHub Release（附带自动生成的更新说明）。
-
-在 Actions 页面手动运行 Release 工作流只会构建产物，不会发布。
+不改版本号的提交不会发版。缺少这一版的 CHANGELOG 段落时工作流会直接报错，不会构建。也可以手动推送同版本号的 `v*` 标签，或在 Actions 页面手动运行 Release 工作流：版本未发布时同样会发布，已发布时只构建产物。
 
 ## 许可
 
