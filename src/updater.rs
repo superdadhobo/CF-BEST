@@ -13,7 +13,8 @@ pub fn launched_after_update() -> bool {
 }
 
 pub enum Installed {
-    /// 新版本已就位并启动，当前进程应立即退出。
+    /// 新版本已就位并启动，当前进程应立即退出。只有 Windows 原地替换会走到这里。
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     Restarting,
     /// 安装包已保存（并尽量打开）在这个位置。
     Saved(PathBuf),
