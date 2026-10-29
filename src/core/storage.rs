@@ -64,7 +64,8 @@ fn platform_data_dir() -> Option<PathBuf> {
     }
 }
 
-pub fn acquire_instance_lock(paths: &AppPaths) -> Option<File> {
+/// 单实例锁。另一个实例占着锁时最多等 `wait`：更新后由旧版本拉起的新版本要等旧进程退出。
+pub fn acquire_instance_lock(paths: &AppPaths, wait: std::time::Duration) -> Option<File> {
     let path = paths.root.join("instance.lock");
     let file = OpenOptions::new()
         .create(true)
@@ -72,9 +73,15 @@ pub fn acquire_instance_lock(paths: &AppPaths) -> Option<File> {
         .write(true)
         .open(path)
         .ok()?;
-    match file.try_lock() {
-        Ok(()) => Some(file),
-        Err(_) => None,
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Some(file),
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(_) => return None,
+        }
     }
 }
 

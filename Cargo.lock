@@ -811,6 +811,7 @@ dependencies = [
  "gpui",
  "rand 0.9.5",
  "raw-window-handle",
+ "ring",
  "rustls",
  "rustls-native-certs",
  "serde",

@@ -15,6 +15,7 @@ use crate::core::probe::{self, ProbeConfig, ProbeOutcome};
 use crate::core::scan::{self, ScanConfig, ScanOutcome};
 use crate::core::speed::{self, SpeedConfig, SpeedOutcome};
 use crate::core::storage::{self, AppPaths};
+use crate::core::update;
 use crate::core::verify::{self, VerifyOutcome, VerifyTarget};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +121,10 @@ pub enum JobEvent {
     },
     ProbeWarning(String),
     ProbeDone(ProbeOutcome),
+    UpdateChecked(Result<update::Release, String>),
+    UpdateProgress(update::DownloadProgress),
+    /// 已下载并校验的安装包内容，或失败原因。
+    UpdateDownloaded(Result<Vec<u8>, String>),
     Error(String),
     Done(JobKind),
     AuxDone,
@@ -480,5 +485,46 @@ pub fn spawn_probe(config: ProbeConfig, tx: UnboundedSender<JobEvent>, cancel: A
             }
         ));
         let _ = tx.send(JobEvent::ProbeDone(outcome));
+    });
+}
+
+/// 检查 GitHub 上的最新版本，结果见 `UpdateChecked`。
+pub fn spawn_update_check(tx: UnboundedSender<JobEvent>) {
+    runtime().spawn(async move {
+        let result = update::latest_release()
+            .await
+            .map_err(|err| format!("{err:#}"));
+        if let Err(err) = &result {
+            storage::log_line(&format!("检查更新失败：{err}"));
+        }
+        let _ = tx.send(JobEvent::UpdateChecked(result));
+    });
+}
+
+/// 测速选线下载安装包并校验，进度见 `UpdateProgress`，结果见 `UpdateDownloaded`。
+pub fn spawn_update_download(
+    asset: update::Asset,
+    cancel: Arc<AtomicBool>,
+    tx: UnboundedSender<JobEvent>,
+) {
+    storage::log_line(&format!("开始下载更新：{}", asset.name));
+    runtime().spawn(async move {
+        let progress_tx = tx.clone();
+        let handle = tokio::spawn(async move {
+            update::download(&asset, cancel, |progress| {
+                let _ = progress_tx.send(JobEvent::UpdateProgress(progress));
+            })
+            .await
+        });
+        let result = match handle.await {
+            Ok(Ok(bytes)) => Ok(bytes),
+            Ok(Err(err)) => Err(format!("{err:#}")),
+            Err(err) => Err(format!("下载任务异常：{err}")),
+        };
+        match &result {
+            Ok(bytes) => storage::log_line(&format!("更新已下载并校验：{} 字节", bytes.len())),
+            Err(err) => storage::log_line(&format!("下载更新失败：{err}")),
+        }
+        let _ = tx.send(JobEvent::UpdateDownloaded(result));
     });
 }

@@ -500,6 +500,9 @@ impl AppState {
             JobEvent::AuxDone => {
                 self.aux_job = None;
             }
+            JobEvent::UpdateChecked(result) => self.on_update_checked(result, cx),
+            JobEvent::UpdateProgress(progress) => self.on_update_progress(progress),
+            JobEvent::UpdateDownloaded(result) => self.on_update_downloaded(result, cx),
         }
     }
 }

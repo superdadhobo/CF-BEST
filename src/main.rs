@@ -10,6 +10,7 @@ mod taskbar;
 mod theme;
 mod tray;
 mod ui;
+mod updater;
 
 use gpui::{
     App, Application, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds,
@@ -23,13 +24,20 @@ fn main() {
     let paths = AppPaths::discover();
     storage::init_logging(&paths);
     storage::install_panic_hook();
-    let _instance_lock = match storage::acquire_instance_lock(&paths) {
+    // 更新后由旧版本拉起：旧进程退出、释放单实例锁之前先等着。
+    let after_update = updater::launched_after_update();
+    let lock_wait = std::time::Duration::from_secs(if after_update { 20 } else { 0 });
+    let _instance_lock = match storage::acquire_instance_lock(&paths, lock_wait) {
         Some(lock) => lock,
         None => {
             storage::log_line("已有另一个实例在运行，退出");
             return;
         }
     };
+    if after_update {
+        storage::log_line(&format!("已更新到 v{}", env!("CARGO_PKG_VERSION")));
+        updater::cleanup_after_update();
+    }
 
     Application::new()
         .with_assets(assets::Assets)

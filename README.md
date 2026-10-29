@@ -66,6 +66,7 @@
 - 💾 **结果自动恢复**：最近一次的扫描、测速与验证结果在重启后自动恢复。
 - 📋 **复制与导出**：点击行复制 `IP:端口`，Top N 一键「复制全部」；导出 TXT / CSV（Excel 可直接打开）。
 - 📥 **导入代理软件**：隧道验证通过后，把优选 IP 套到订阅节点上，一键导入本机的 Clash Verge、Karing、Stash、FlClash 等客户端；也可复制本机订阅地址或节点链接。客户端更新订阅即可拿到最新一轮自动优选的结果。
+- 🔄 **检查更新**：启动时与每天自动检查（可关闭），有新版本时状态栏右下角提示。一键更新会同时测速 GitHub 直连与 gh-proxy.com 等国内镜像，走最快的线路下载，并用 GitHub 给出的 SHA-256 校验；Windows 自动替换并重启，macOS 打开安装包。
 - ⏰ **可靠的定时运行**：到点后当天还没跑过就开始，错过时间会补跑，有任务时排队等待，后台运行不打断当前操作。
 - 🎨 **主题**：森林 / 薄荷 / 蜜蜂 / 羊皮纸 4 种风格 × 浅色 / 深色 / 跟随系统；界面缩放 90%–125%。
 - ⌨️ **全键盘操作**：页面切换、开始 / 停止任务、焦点移动都有快捷键。
@@ -164,9 +165,9 @@ macOS 上用 `⌘` 代替 `Ctrl`。
   - macOS：`~/Library/Application Support/CFBest`
   
   侧栏底部的「数据目录」可以直接打开该文件夹。
-- 应用只访问以下地址：被测 IP 本身、Cloudflare 的公开接口（IP 段列表、`/cdn-cgi/trace`、`speed.cloudflare.com`、`cp.cloudflare.com`）、RIPE Stat（查询 ASN 前缀），以及你填写的订阅链接。
+- 应用只访问以下地址：被测 IP 本身、Cloudflare 的公开接口（IP 段列表、`/cdn-cgi/trace`、`speed.cloudflare.com`、`cp.cloudflare.com`）、RIPE Stat（查询 ASN 前缀）、你填写的订阅链接，以及检查与下载更新用的 GitHub 和下载镜像（gh-proxy.com、ghfast.top、ghproxy.net）。
 - 导入过代理软件后，应用会在 `127.0.0.1` 上提供订阅地址供客户端更新（只接受本机访问，地址含随机令牌）；应用没在运行时，客户端保留上次导入的节点。
-- 没有统计、遥测或自动更新。订阅链接与节点信息只保存在本机：链接在 `settings.json`，最近一次成功载入的节点在 `subscription.json`（订阅拉取失败时沿用）。
+- 没有统计或遥测。检查更新只向 GitHub 查询最新版本信息，不上传任何数据，可在状态栏右下角的版本号弹层里关闭。订阅链接与节点信息只保存在本机：链接在 `settings.json`，最近一次成功载入的节点在 `subscription.json`（订阅拉取失败时沿用）。
 
 ## 从源码构建
 
@@ -204,6 +205,9 @@ cargo test --locked -- --ignored   # 需要联网的测试：边缘 trace、测�
 | `CFBEST_TRAY=1` | 开启托盘常驻 |
 | `CFBEST_DEMO=1` | 载入内存中的演示数据 |
 | `CFBEST_TRAY_SELFTEST=1` | 托盘自检，结果写入运行日志 |
+| `CFBEST_UPDATE_POPOVER=1` | 启动时打开检查更新弹层 |
+| `CFBEST_FAKE_VERSION=0.0.9` | 冒充旧版本，用来测试更新流程 |
+| `CFBEST_AUTO_UPDATE=1` | 发现新版本后自动下载并安装（配合上一项，在程序副本上测试替换与重启） |
 
 </details>
 

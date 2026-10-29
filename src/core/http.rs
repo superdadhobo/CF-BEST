@@ -371,6 +371,14 @@ fn resolve_location(base: &UrlParts, location: &str) -> Result<UrlParts> {
 }
 
 pub async fn https_get(url: &str, insecure: bool, wait: Duration) -> Result<Vec<u8>> {
+    let (mut conn, head) = open_get(url, insecure, wait).await?;
+    let body = read_to_end_limited(&mut conn, head.leftover.clone(), 8 * 1024 * 1024, wait).await?;
+    decode_body(&head, body)
+}
+
+/// 发出 GET 并跟随重定向（最多 5 次），返回 2xx 响应的连接与响应头；正文由调用方读取，
+/// 已读到的部分在 `head.leftover` 里。
+pub async fn open_get(url: &str, insecure: bool, wait: Duration) -> Result<(Conn, HttpHead)> {
     let mut target = parse_https_url(url)?;
     for _ in 0..5 {
         let mut conn = connect_tls(&target.host, target.port, &target.host, insecure, wait).await?;
@@ -394,25 +402,26 @@ pub async fn https_get(url: &str, insecure: bool, wait: Duration) -> Result<Vec<
         if !(200..300).contains(&head.status) {
             bail!("HTTP {}（{}）", head.status, target.host);
         }
-        let body =
-            read_to_end_limited(&mut conn, head.leftover.clone(), 8 * 1024 * 1024, wait).await?;
-        let chunked = head
-            .header("transfer-encoding")
-            .map(|value| value.to_ascii_lowercase().contains("chunked"))
-            .unwrap_or(false);
-        let body = if chunked {
-            decode_chunked(&body)?
-        } else if let Some(length) = head
-            .header("content-length")
-            .and_then(|value| value.parse::<usize>().ok())
-        {
-            body[..body.len().min(length)].to_vec()
-        } else {
-            body
-        };
-        return Ok(body);
+        return Ok((conn, head));
     }
     bail!("重定向次数过多")
+}
+
+/// 按响应头还原正文：chunked 解码，或按 Content-Length 截掉多余的字节。
+pub fn decode_body(head: &HttpHead, body: Vec<u8>) -> Result<Vec<u8>> {
+    let chunked = head
+        .header("transfer-encoding")
+        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"));
+    if chunked {
+        decode_chunked(&body)
+    } else if let Some(length) = head
+        .header("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        Ok(body[..body.len().min(length)].to_vec())
+    } else {
+        Ok(body)
+    }
 }
 
 pub async fn probe_trace(ip: &str, port: u16, wait: Duration) -> Result<(String, f64)> {

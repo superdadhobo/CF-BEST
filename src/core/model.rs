@@ -287,6 +287,8 @@ pub struct Settings {
     pub proxy_feed_port: u16,
     /// 本机订阅地址中的随机令牌，其他程序与网页猜不到地址。
     pub proxy_feed_token: String,
+    /// 启动时与每天自动检查一次新版本（只向 GitHub 请求最新版本信息，不上传任何数据）。
+    pub update_check: bool,
 }
 
 impl Default for Settings {
@@ -325,6 +327,7 @@ impl Default for Settings {
             proxy_feed_enabled: false,
             proxy_feed_port: 0,
             proxy_feed_token: String::new(),
+            update_check: true,
         }
     }
 }

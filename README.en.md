@@ -51,6 +51,7 @@ Also included:
 - 💾 **Results survive restarts.** The latest scan, speed test and verification results come back on launch.
 - 📋 **Copy and export.** Click a row to copy `IP:port`, copy the whole Top N at once, and export TXT or CSV (opens in Excel).
 - 📥 **Import into your proxy client.** After a tunnel check, the passing IPs are applied to your subscription node and imported into a local Clash Verge, Karing, Stash, FlClash or similar client in one click. You can also copy the local subscription URL or the node links. The client picks up each new auto-optimize round when it updates the subscription.
+- 🔄 **Update check.** Checks at startup and once a day (can be turned off) and flags new versions at the bottom right of the status bar. One-click update races direct GitHub against mirrors popular in China such as gh-proxy.com, downloads over the fastest route, and verifies the file against the SHA-256 GitHub publishes. Windows swaps the exe and restarts; macOS opens the installer.
 - ⏰ **Reliable scheduling.** A run starts once the time has passed and today has no run yet. A missed time is caught up, a busy app queues the run, and a scheduled run never switches your page.
 - 🎨 **Themes.** Forest, Mint, Bee and Parchment, each light, dark or following the system, with UI scaling from 90% to 125%.
 - ⌨️ **Keyboard-first.** Shortcuts for pages, start/stop and focus navigation.
@@ -149,9 +150,9 @@ Use `⌘` instead of `Ctrl` on macOS.
   - macOS: `~/Library/Application Support/CFBest`
   
   *数据目录* (*Data folder*) at the bottom of the sidebar opens it.
-- The app only talks to the IPs under test, Cloudflare's public endpoints (IP range lists, `/cdn-cgi/trace`, `speed.cloudflare.com`, `cp.cloudflare.com`), RIPE Stat (ASN prefixes), and any subscription link you enter.
+- The app only talks to the IPs under test, Cloudflare's public endpoints (IP range lists, `/cdn-cgi/trace`, `speed.cloudflare.com`, `cp.cloudflare.com`), RIPE Stat (ASN prefixes), any subscription link you enter, and GitHub plus download mirrors (gh-proxy.com, ghfast.top, ghproxy.net) for updates.
 - Once you import into a proxy client, the app serves a subscription URL on `127.0.0.1` for the client's updates. It accepts local requests only and the URL contains a random token. While the app isn't running, the client keeps the nodes it imported last.
-- No analytics, telemetry or auto-update. Subscription links and node details stay on your machine: the link in `settings.json`, and the nodes from the last successful load in `subscription.json` (used when a fetch fails).
+- No analytics or telemetry. The update check only asks GitHub for the latest release and sends nothing; turn it off in the popover behind the version number at the bottom right. Subscription links and node details stay on your machine: the link in `settings.json`, and the nodes from the last successful load in `subscription.json` (used when a fetch fails).
 
 ## Building from source
 

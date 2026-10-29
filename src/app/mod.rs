@@ -11,6 +11,7 @@ mod sidebar;
 mod speed_page;
 mod theme_panel;
 mod toast;
+mod update_panel;
 mod verify_page;
 mod window_chrome;
 
@@ -242,6 +243,13 @@ pub struct AppState {
     sub_loading: bool,
     /// 最近一次成功拉取的订阅节点（`subscription.json`），拉取失败时沿用。
     sub_cache: SubscriptionCache,
+    /// 检查更新的状态与弹层（见 update_panel.rs）。
+    update: update_panel::UpdateState,
+    update_cancel: Option<Arc<AtomicBool>>,
+    update_popover_open: bool,
+    update_popover_closed_at: Option<Instant>,
+    /// 上次检查更新的时刻；自动检查每 24 小时一次。
+    last_update_check: Option<Instant>,
 
     daily_segments: Entity<TextInput>,
     daily_test: Entity<TextInput>,
@@ -485,6 +493,11 @@ impl AppState {
             proxy_clients: crate::proxy_clients::detect(),
             sub_loading: false,
             sub_cache,
+            update: Default::default(),
+            update_cancel: None,
+            update_popover_open: false,
+            update_popover_closed_at: None,
+            last_update_check: None,
             daily_segments,
             daily_test,
             daily_top,
@@ -592,7 +605,9 @@ impl AppState {
     /// 避免临时状态（如收起侧栏、托盘常驻）被保存下来。
     ///
     /// `CFBEST_THEME=bee-light` · `CFBEST_PAGE=speed` · `CFBEST_SCALE=1.25` ·
-    /// `CFBEST_SIDEBAR=collapsed` · `CFBEST_TRAY=1` · `CFBEST_DEMO=1`（内存中的演示数据）。
+    /// `CFBEST_SIDEBAR=collapsed` · `CFBEST_TRAY=1` · `CFBEST_DEMO=1`（内存中的演示数据）·
+    /// `CFBEST_UPDATE_POPOVER=1`（打开检查更新弹层）。另见 update_panel.rs 的 `CFBEST_FAKE_VERSION`
+    /// 与 `CFBEST_AUTO_UPDATE`：冒充旧版本、发现新版本后自动下载安装，用来测试更新流程。
     #[cfg(debug_assertions)]
     fn apply_debug_overrides(&mut self) {
         let var = |name: &str| std::env::var(name).ok();
@@ -626,6 +641,10 @@ impl AppState {
         }
         if var("CFBEST_DEMO").is_some() {
             self.load_demo_data();
+            used = true;
+        }
+        if var("CFBEST_UPDATE_POPOVER").is_some() {
+            self.update_popover_open = true;
             used = true;
         }
         if used {
@@ -743,6 +762,7 @@ impl AppState {
             cx.notify();
         }
         self.maybe_auto_daily(cx);
+        self.maybe_check_update(cx);
     }
 
     /// 每日自动优选：到点后当天还没运行过就开始；错过时间（睡眠、关机）会在之后补跑，
@@ -1099,20 +1119,7 @@ impl AppState {
                             ),
                     )
                     .child(div().w(px(1.)).h(px(12.)).bg(theme::border_subtle()))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .child(widgets::icon("logo", 14.0, theme::faint()))
-                            .child(
-                                div()
-                                    .font_family(theme::FONT_MONO)
-                                    .text_size(px(theme::font::CAPTION))
-                                    .text_color(theme::faint())
-                                    .child(concat!("v", env!("CARGO_PKG_VERSION"))),
-                            ),
-                    ),
+                    .child(self.render_version_label(cx)),
             )
     }
 }

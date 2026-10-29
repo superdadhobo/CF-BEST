@@ -10,4 +10,5 @@ pub mod speed;
 pub mod stats;
 pub mod storage;
 pub mod sub_server;
+pub mod update;
 pub mod verify;
