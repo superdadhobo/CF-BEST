@@ -421,8 +421,8 @@ impl AppState {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy() {
-            self.fail("已有任务在运行", cx);
+        if self.sub_loading {
+            self.notify_status("订阅正在载入，请稍候", Tone::Muted, cx);
             return;
         }
         let url = self.sub_url.read(cx).content().trim().to_string();
@@ -432,9 +432,38 @@ impl AppState {
         }
         self.settings.sub_url = url.clone();
         self.save_settings();
-        self.aux_job = Some(JobKind::Subscription);
-        crate::jobs::spawn_subscription(url, self.events_tx.clone());
+        self.start_subscription_load(url);
         self.notify_status("正在拉取订阅节点…", Tone::Accent, cx);
+    }
+
+    /// 在后台拉取订阅，失败时自动重试；结果见 `SubscriptionReady` / `SubscriptionFailed`。
+    pub(super) fn start_subscription_load(&mut self, url: String) {
+        self.sub_loading = true;
+        crate::jobs::spawn_subscription(url, self.events_tx.clone());
+    }
+
+    /// 换上一批订阅节点（新拉取的或上次成功载入的），更新节点说明并交给本机订阅服务。
+    pub(super) fn apply_subscription_nodes(&mut self, nodes: Vec<VlessNode>, note: Option<&str>) {
+        let ws_count = nodes
+            .iter()
+            .filter(|node| node.transport.eq_ignore_ascii_case("ws"))
+            .count();
+        let mut source = format!("{} 个节点（{ws_count} 个 ws）", nodes.len());
+        if let Some(note) = note {
+            source.push_str(" · ");
+            source.push_str(note);
+        }
+        // 与 verify::node_for_ips 一致：只有 WS 节点用于验证 IP，其余传输改用内置探测。
+        self.verify_node_source = match nodes
+            .iter()
+            .find(|node| node.transport.eq_ignore_ascii_case("ws"))
+        {
+            Some(node) => format!("{source} · {}", node.summary()),
+            None if nodes.is_empty() => format!("{source} · 无可用节点"),
+            None => format!("{source} · 无 WS 节点，验证 IP 时只做 TLS 基础验证"),
+        };
+        self.verify_nodes = nodes;
+        self.publish_proxy_feeds();
     }
 
     pub(super) fn start_verify(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -444,6 +473,14 @@ impl AppState {
     pub(super) fn start_verify_inner(&mut self, cx: &mut Context<Self>) {
         if self.busy() {
             self.fail("已有任务在运行，请等待完成或先停止", cx);
+            return;
+        }
+        if self.awaiting_nodes() {
+            self.notify_status(
+                "订阅节点正在载入，载入后再验证才能走隧道验证",
+                Tone::Amber,
+                cx,
+            );
             return;
         }
         let advanced = self.settings.advanced_mode;
@@ -529,7 +566,11 @@ impl AppState {
             return;
         }
         if self.verify_nodes.is_empty() {
-            self.fail("尚未拉取订阅，无法验证订阅节点", cx);
+            if self.sub_loading {
+                self.notify_status("订阅节点正在载入，请稍候", Tone::Amber, cx);
+            } else {
+                self.fail("尚未拉取订阅，无法验证订阅节点", cx);
+            }
             return;
         }
         let targets: Vec<VerifyTarget> = self
@@ -611,6 +652,9 @@ impl AppState {
     ) -> Result<(), String> {
         if self.busy() {
             return Err("已有任务在运行，请等待完成或先停止".into());
+        }
+        if self.awaiting_nodes() {
+            return Err("订阅节点正在载入，载入后再运行才能走隧道验证".into());
         }
         let advanced = self.settings.advanced_mode;
         let (segments, test, top, concurrency) = if advanced {
@@ -846,6 +890,7 @@ impl AppState {
         self.daily_progress = ProgressState::default();
         self.daily_stage = "已重置".into();
         self.daily_detail = "进度已清零，下次将从段池开头扫描".into();
+        self.publish_proxy_feeds();
         self.notify_status("每日进度已重置", Tone::Green, cx);
     }
 }

@@ -130,6 +130,13 @@ impl AppState {
                             Tone::Blue,
                         ))
                     })
+                    .when(self.sub_loading, |row| {
+                        row.child(widgets::running_chip(
+                            "topbar-sub-spinner",
+                            "订阅载入中",
+                            Tone::Blue,
+                        ))
+                    })
                     // macOS 使用系统的红绿灯按钮（见 main.rs 的 traffic_light_position）。
                     .when(!cfg!(target_os = "macos"), |row| {
                         row.child(
@@ -321,6 +328,8 @@ impl AppState {
             format!("{}运行中", kind.label())
         } else if let Some(kind) = self.aux_job {
             format!("{}进行中", kind.label())
+        } else if self.sub_loading {
+            "订阅载入中".to_string()
         } else {
             "空闲".to_string()
         }

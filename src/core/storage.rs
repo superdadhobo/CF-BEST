@@ -9,7 +9,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::core::model::{
     DailyEntry, DailyState, DailyVerification, History, LastScan, ScanHit, SegmentScores, Settings,
-    SpeedRecord, VerifyRecord,
+    SpeedRecord, SubscriptionCache, VerifyRecord,
 };
 
 static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
@@ -181,6 +181,20 @@ pub fn load_last_scan(paths: &AppPaths) -> LastScan {
 pub fn save_last_scan(paths: &AppPaths, scan: &LastScan) {
     if let Err(err) = save_json(&last_scan_path(paths), scan) {
         log_line(&format!("保存扫描结果失败：{err}"));
+    }
+}
+
+fn subscription_cache_path(paths: &AppPaths) -> PathBuf {
+    paths.root.join("subscription.json")
+}
+
+pub fn load_subscription_cache(paths: &AppPaths) -> SubscriptionCache {
+    load_json(&subscription_cache_path(paths))
+}
+
+pub fn save_subscription_cache(paths: &AppPaths, cache: &SubscriptionCache) {
+    if let Err(err) = save_json(&subscription_cache_path(paths), cache) {
+        log_line(&format!("保存订阅节点失败：{err}"));
     }
 }
 

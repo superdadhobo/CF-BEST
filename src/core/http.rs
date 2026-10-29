@@ -14,6 +14,7 @@ use tokio::net::{TcpStream, lookup_host};
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
+use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::core::model::VlessNode;
 use crate::core::{ip, storage};
@@ -531,16 +532,70 @@ pub async fn fetch_asn_prefixes(asn_list: &str, wait: Duration) -> Result<(Vec<S
     Ok((prefixes, sources.join("；")))
 }
 
+/// 订阅拉取失败后的重试间隔：共尝试 3 次。订阅地址在部分网络下时通时断
+/// （TLS 握手超时、读取响应超时），隔几秒重试往往就能成功。
+const SUBSCRIPTION_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(10)];
+
+/// 拉取并解析订阅。网络请求失败（超时、连接中断、HTTP 错误）按 [`SUBSCRIPTION_RETRY_DELAYS`]
+/// 重试；拿到内容但解析不出节点时不重试，再拉一次结果也一样。
 pub async fn fetch_subscription(url: &str, wait: Duration) -> Result<Vec<VlessNode>> {
-    let body = https_get(url, false, wait).await?;
-    let text = String::from_utf8_lossy(&body).trim().to_string();
-    let text = if text.contains("vless://") {
-        text
+    let (body, attempts) = with_retries(
+        &SUBSCRIPTION_RETRY_DELAYS,
+        |attempt, err, delay| {
+            storage::log_line(&format!(
+                "订阅拉取失败（第 {attempt} 次），{} 秒后重试：{err:#}",
+                delay.as_secs()
+            ));
+        },
+        || https_get(url, false, wait),
+    )
+    .await;
+    let body = body.map_err(|err| {
+        if attempts > 1 {
+            anyhow!("{err:#}（共尝试 {attempts} 次）")
+        } else {
+            err
+        }
+    })?;
+    parse_subscription(&String::from_utf8_lossy(&body))
+}
+
+/// 依次尝试，第 n 次失败后等待 `delays[n-1]` 再试，`delays` 用完即放弃；返回结果与尝试次数。
+/// `on_retry` 收到失败的次序、错误与随后的等待时长。
+async fn with_retries<T, Fut>(
+    delays: &[Duration],
+    mut on_retry: impl FnMut(usize, &anyhow::Error, Duration),
+    mut attempt: impl FnMut() -> Fut,
+) -> (Result<T>, usize)
+where
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match attempt().await {
+            Ok(value) => return (Ok(value), attempts),
+            Err(err) => match delays.get(attempts - 1) {
+                Some(&delay) => {
+                    on_retry(attempts, &err, delay);
+                    tokio::time::sleep(delay).await;
+                }
+                None => return (Err(err), attempts),
+            },
+        }
+    }
+}
+
+/// 订阅内容：vless:// 分享链接（明文或 Base64），或 Clash / mihomo 配置里的 VLESS 节点。
+pub fn parse_subscription(text: &str) -> Result<Vec<VlessNode>> {
+    let text = text.trim();
+    let links = if text.contains("vless://") {
+        text.to_string()
     } else {
-        decode_base64_text(&text).unwrap_or(text)
+        decode_base64_text(text).unwrap_or_else(|| text.to_string())
     };
     let mut nodes = Vec::new();
-    for line in text.lines() {
+    for line in links.lines() {
         let line = line.trim();
         if line.starts_with("vless://")
             && let Some(node) = parse_vless_link(line)
@@ -549,9 +604,122 @@ pub async fn fetch_subscription(url: &str, wait: Duration) -> Result<Vec<VlessNo
         }
     }
     if nodes.is_empty() {
-        bail!("订阅中没有找到 vless:// 节点");
+        nodes = parse_clash_proxies(text);
+    }
+    if nodes.is_empty() {
+        bail!("订阅中没有找到 VLESS 节点（支持 vless:// 分享链接与 Clash 配置）");
     }
     Ok(nodes)
+}
+
+/// Clash / mihomo 配置 `proxies` 列表中的 VLESS 节点，换算成分享链接的字段。默认值与 mihomo 一致：
+/// Host 头缺省取服务器地址，SNI 依次取 servername、Host 头、服务器地址；
+/// `max-early-data` 写成路径里的 `ed` 参数，与分享链接的约定相同。
+fn parse_clash_proxies(text: &str) -> Vec<VlessNode> {
+    let Ok(docs) = YamlLoader::load_from_str(text) else {
+        return Vec::new();
+    };
+    let Some(proxies) = docs.first().and_then(|doc| doc["proxies"].as_vec()) else {
+        return Vec::new();
+    };
+    proxies.iter().filter_map(clash_vless).collect()
+}
+
+fn clash_vless(proxy: &Yaml) -> Option<VlessNode> {
+    if !yaml_text(&proxy["type"])?.eq_ignore_ascii_case("vless") {
+        return None;
+    }
+    let addr = yaml_text(&proxy["server"])?;
+    let uuid = yaml_text(&proxy["uuid"])?;
+    let port = yaml_port(&proxy["port"]).unwrap_or(443);
+    let transport = yaml_text(&proxy["network"])
+        .unwrap_or_else(|| "tcp".into())
+        .to_ascii_lowercase();
+    let tls = yaml_flag(&proxy["tls"]);
+    let ws = &proxy["ws-opts"];
+    let host_header = ws["headers"].as_hash().and_then(|headers| {
+        headers.iter().find_map(|(key, value)| {
+            key.as_str()
+                .is_some_and(|key| key.eq_ignore_ascii_case("host"))
+                .then(|| yaml_text(value))
+                .flatten()
+        })
+    });
+    let host = host_header.clone().unwrap_or_else(|| addr.clone());
+    let sni = yaml_text(&proxy["servername"])
+        .or_else(|| yaml_text(&proxy["sni"]))
+        .or(host_header)
+        .unwrap_or_else(|| addr.clone());
+    let mut path = yaml_text(&ws["path"]).unwrap_or_else(|| "/".into());
+    if let Some(early) = yaml_port(&ws["max-early-data"]).filter(|early| *early > 0)
+        && !path.contains("ed=")
+    {
+        let joiner = if path.contains('?') { '&' } else { '?' };
+        path = format!("{path}{joiner}ed={early}");
+    }
+
+    let mut params = vec![
+        ("encryption".to_string(), "none".to_string()),
+        (
+            "security".to_string(),
+            if tls { "tls" } else { "none" }.to_string(),
+        ),
+    ];
+    if tls {
+        params.push(("sni".into(), sni.clone()));
+    }
+    if let Some(fingerprint) = yaml_text(&proxy["client-fingerprint"]) {
+        params.push(("fp".into(), fingerprint));
+    }
+    if let Some(alpn) = proxy["alpn"].as_vec() {
+        let alpn: Vec<String> = alpn.iter().filter_map(yaml_text).collect();
+        if !alpn.is_empty() {
+            params.push(("alpn".into(), alpn.join(",")));
+        }
+    }
+    if yaml_flag(&proxy["skip-cert-verify"]) {
+        params.push(("allowInsecure".into(), "1".into()));
+    }
+    params.push(("type".into(), transport.clone()));
+    params.push(("host".into(), host.clone()));
+    params.push(("path".into(), path.clone()));
+
+    Some(VlessNode {
+        name: yaml_text(&proxy["name"]).unwrap_or_default(),
+        uuid,
+        addr,
+        port,
+        transport,
+        path,
+        host,
+        sni,
+        params,
+    })
+}
+
+fn yaml_text(value: &Yaml) -> Option<String> {
+    let text = match value {
+        Yaml::String(text) | Yaml::Real(text) => text.trim().to_string(),
+        Yaml::Integer(number) => number.to_string(),
+        _ => return None,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
+fn yaml_port(value: &Yaml) -> Option<u16> {
+    match value {
+        Yaml::Integer(number) => u16::try_from(*number).ok(),
+        Yaml::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn yaml_flag(value: &Yaml) -> bool {
+    match value {
+        Yaml::Boolean(flag) => *flag,
+        Yaml::String(text) => text.trim().eq_ignore_ascii_case("true"),
+        _ => false,
+    }
 }
 
 fn decode_base64_text(text: &str) -> Option<String> {
@@ -623,30 +791,27 @@ pub fn parse_vless_link(link: &str) -> Option<VlessNode> {
     if addr.is_empty() || uuid.is_empty() {
         return None;
     }
-    let mut params = std::collections::HashMap::new();
-    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        params.insert(percent_decode(key), percent_decode(value));
-    }
-    let host = params
-        .get("host")
-        .filter(|host| !host.is_empty())
-        .cloned()
-        .unwrap_or_else(|| addr.clone());
-    let sni = params
-        .get("sni")
-        .filter(|sni| !sni.is_empty())
-        .cloned()
-        .unwrap_or_else(|| addr.clone());
-    let path = params
-        .get("path")
-        .filter(|path| !path.is_empty())
-        .cloned()
-        .unwrap_or_else(|| "/".to_string());
-    let transport = params
-        .get("type")
-        .filter(|value| !value.is_empty())
-        .cloned()
+    let params: Vec<(String, String)> = query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (percent_decode(key), percent_decode(value))
+        })
+        .collect();
+    // 同名参数以最后一个为准；空值视为未填写。
+    let param = |name: &str| {
+        params
+            .iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+            .filter(|value| !value.is_empty())
+    };
+    let host = param("host").unwrap_or_else(|| addr.clone());
+    let sni = param("sni").unwrap_or_else(|| addr.clone());
+    let path = param("path").unwrap_or_else(|| "/".to_string());
+    let transport = param("type")
         .unwrap_or_else(|| "tcp".to_string())
         .to_ascii_lowercase();
     Some(VlessNode {
@@ -658,6 +823,7 @@ pub fn parse_vless_link(link: &str) -> Option<VlessNode> {
         path,
         host,
         sni,
+        params,
     })
 }
 
@@ -696,6 +862,127 @@ mod tests {
         assert_eq!(node.path, "/w-123");
         assert_eq!(node.transport, "ws");
         assert_eq!(node.name, "HK node");
+        assert_eq!(node.params.len(), 6);
+        assert_eq!(node.params[1], ("security".into(), "tls".into()));
+        assert_eq!(node.params[5], ("path".into(), "/w-123".into()));
+    }
+
+    #[test]
+    fn parses_block_style_clash_subscription() {
+        // 与 edgetunnel 等面板输出的 Clash 配置同形：顶层 dns / proxies / proxy-groups / rules。
+        let yaml = "dns:\n  enable: true\nproxies:\n- name: HK 01\n  type: vless\n  server: edge.example.com\n  port: 443\n  uuid: b831381d-6324-4d53-ad4f-8cda48b30811\n  network: ws\n  tls: true\n  servername: sni.example.com\n  client-fingerprint: chrome\n  udp: true\n  ws-opts:\n    path: /?ed=2560\n    headers:\n      Host: host.example.com\n- name: other\n  type: trojan\n  server: t.example.com\n  port: 443\n  password: secret\nproxy-groups:\n- name: auto\n  type: url-test\n  proxies:\n  - HK 01\nrules:\n- MATCH,auto\n";
+        let nodes = parse_subscription(yaml).unwrap();
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0];
+        assert_eq!(node.name, "HK 01");
+        assert_eq!(node.addr, "edge.example.com");
+        assert_eq!(node.port, 443);
+        assert_eq!(node.uuid, "b831381d-6324-4d53-ad4f-8cda48b30811");
+        assert_eq!(node.transport, "ws");
+        assert_eq!(node.path, "/?ed=2560");
+        assert_eq!(node.host, "host.example.com");
+        assert_eq!(node.sni, "sni.example.com");
+        assert!(node.params.contains(&("fp".into(), "chrome".into())));
+        assert!(node.params.contains(&("security".into(), "tls".into())));
+        // 换算出的参数能拼回等价的分享链接。
+        let query = node
+            .params
+            .iter()
+            .map(|(key, value)| format!("{key}={}", crate::core::proxy::percent_encode(value)))
+            .collect::<Vec<_>>()
+            .join("&");
+        let link = parse_vless_link(&format!(
+            "vless://{}@{}:{}?{query}#x",
+            node.uuid, node.addr, node.port
+        ))
+        .unwrap();
+        assert_eq!(
+            (&link.host, &link.sni, &link.path, &link.transport),
+            (&node.host, &node.sni, &node.path, &node.transport)
+        );
+    }
+
+    #[test]
+    fn parses_flow_style_clash_subscription_with_mihomo_defaults() {
+        let yaml = "proxies:\n  - {name: \"US 1\", server: 104.16.1.2, port: 2053, type: vless, uuid: b831381d-6324-4d53-ad4f-8cda48b30811, tls: true, skip-cert-verify: true, alpn: [http/1.1], network: ws, ws-opts: {path: /ws, max-early-data: 2048, early-data-header-name: Sec-WebSocket-Protocol}}\n  - {name: plain, server: a.example.com, port: 80, type: vless, uuid: b831381d-6324-4d53-ad4f-8cda48b30811, network: ws, ws-opts: {path: \"/x?y=1\", max-early-data: 1024, headers: {host: h.example.com}}}\n";
+        let nodes = parse_subscription(yaml).unwrap();
+        assert_eq!(nodes.len(), 2);
+        let first = &nodes[0];
+        assert_eq!((first.addr.as_str(), first.port), ("104.16.1.2", 2053));
+        assert_eq!(first.host, "104.16.1.2");
+        assert_eq!(first.sni, "104.16.1.2");
+        assert_eq!(first.path, "/ws?ed=2048");
+        assert!(first.params.contains(&("allowInsecure".into(), "1".into())));
+        assert!(first.params.contains(&("alpn".into(), "http/1.1".into())));
+        let second = &nodes[1];
+        assert_eq!(second.host, "h.example.com");
+        assert_eq!(second.sni, "h.example.com");
+        assert_eq!(second.path, "/x?y=1&ed=1024");
+        assert!(second.params.contains(&("security".into(), "none".into())));
+        assert!(!second.params.iter().any(|(key, _)| key == "sni"));
+    }
+
+    #[test]
+    fn parses_link_subscriptions_and_rejects_empty_ones() {
+        let link =
+            "vless://b831381d-6324-4d53-ad4f-8cda48b30811@example.com:443?security=tls&type=ws#a";
+        assert_eq!(parse_subscription(link).unwrap().len(), 1);
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(format!("{link}\nvmess://eyJ2IjoyfQ==\n"));
+        assert_eq!(parse_subscription(&encoded).unwrap().len(), 1);
+        assert!(parse_subscription("proxies: []\n").is_err());
+        assert!(
+            parse_subscription("proxies:\n- {name: t, type: trojan, server: a, port: 1}\n")
+                .is_err()
+        );
+        assert!(parse_subscription("<html><body>login</body></html>").is_err());
+        assert!(parse_subscription("").is_err());
+    }
+
+    #[tokio::test]
+    async fn retries_until_success_or_delays_run_out() {
+        let delays = [Duration::ZERO, Duration::ZERO];
+
+        let mut calls = 0;
+        let mut retried = Vec::new();
+        let (result, attempts) = with_retries(
+            &delays,
+            |attempt, err, _| retried.push(format!("{attempt}:{err}")),
+            || {
+                calls += 1;
+                let call = calls;
+                async move {
+                    if call < 3 {
+                        bail!("超时 {call}");
+                    }
+                    Ok(call)
+                }
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap(), 3);
+        assert_eq!(attempts, 3);
+        assert_eq!(retried, vec!["1:超时 1", "2:超时 2"]);
+
+        let mut calls = 0;
+        let (result, attempts) = with_retries(
+            &delays,
+            |_, _, _| {},
+            || {
+                calls += 1;
+                async { Err::<(), _>(anyhow!("连接被重置")) }
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err().to_string(), "连接被重置");
+        assert_eq!((attempts, calls), (3, 3));
+
+        let (result, attempts) = with_retries(&[], |_, _, _| {}, || async { Ok(7) }).await;
+        assert_eq!((result.unwrap(), attempts), (7, 1));
+        let (result, attempts) =
+            with_retries(&[], |_, _, _| {}, || async { Err::<(), _>(anyhow!("x")) }).await;
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
     }
 
     #[tokio::test]

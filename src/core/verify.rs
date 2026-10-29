@@ -354,6 +354,7 @@ pub fn tls_probe_node() -> VlessNode {
         path: "/cdn-cgi/trace".into(),
         host: PROBE_HOST.into(),
         sni: PROBE_HOST.into(),
+        params: Vec::new(),
     }
 }
 
@@ -459,6 +460,7 @@ mod tests {
             path: "/".into(),
             host: "www.microsoft.com".into(),
             sni: "www.microsoft.com".into(),
+            params: Vec::new(),
         };
 
         for nodes in [vec![], vec![node("reality", "tcp"), node("grpc", "grpc")]] {

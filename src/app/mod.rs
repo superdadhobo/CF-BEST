@@ -5,6 +5,7 @@ mod events;
 mod history_page;
 mod pool_actions;
 mod pool_page;
+mod proxy_import;
 mod scan_page;
 mod sidebar;
 mod speed_page;
@@ -29,7 +30,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::core::model::{
     DailyEntry, DailyState, DailySummary, History, ParamGroup, ScanHit, SegmentScores, Settings,
-    SpeedRecord, VerifyRecord, VlessNode,
+    SpeedRecord, SubscriptionCache, VerifyRecord, VlessNode,
 };
 use crate::core::storage::{self, AppPaths};
 use crate::core::verify::VerifyTarget;
@@ -235,6 +236,12 @@ pub struct AppState {
     verify_nodes: Vec<VlessNode>,
     verify_node_source: String,
     verify_progress: ProgressState,
+    /// 本机已安装、支持一键导入的代理软件；进入验证 / 自动优选页时重新检测。
+    proxy_clients: Vec<crate::proxy_clients::ProxyClient>,
+    /// 订阅正在后台拉取（含失败重试）。不占任务槽，扫描、测速照常可用。
+    sub_loading: bool,
+    /// 最近一次成功拉取的订阅节点（`subscription.json`），拉取失败时沿用。
+    sub_cache: SubscriptionCache,
 
     daily_segments: Entity<TextInput>,
     daily_test: Entity<TextInput>,
@@ -307,6 +314,7 @@ impl AppState {
         let last_verify = history.verify.first().cloned();
         let pool_segments = storage::load_pool(&paths);
         let segment_scores = storage::load_segment_scores(&paths);
+        let sub_cache = storage::load_subscription_cache(&paths);
         let mut daily_state = storage::load_daily_state(&paths);
         if daily_state.round == 0 {
             daily_state.round = 1;
@@ -474,6 +482,9 @@ impl AppState {
             verify_records: last_verify.map(|run| run.records).unwrap_or_default(),
             verify_nodes: Vec::new(),
             verify_node_source: "尚未配置订阅".into(),
+            proxy_clients: crate::proxy_clients::detect(),
+            sub_loading: false,
+            sub_cache,
             daily_segments,
             daily_test,
             daily_top,
@@ -547,9 +558,14 @@ impl AppState {
         })
         .detach();
 
-        if !app.settings.sub_url.trim().is_empty() {
-            app.aux_job = Some(JobKind::Subscription);
-            crate::jobs::spawn_subscription(app.settings.sub_url.clone(), app.events_tx.clone());
+        let sub_url = app.settings.sub_url.trim().to_string();
+        if !sub_url.is_empty() {
+            // 先用上次成功载入的节点，后台刷新失败也不会退回 TLS 基础验证。
+            if let Some(nodes) = app.sub_cache.nodes_for(&sub_url).map(<[_]>::to_vec) {
+                let note = format!("沿用 {} 载入的结果", app.sub_cache.time);
+                app.apply_subscription_nodes(nodes, Some(&note));
+            }
+            app.start_subscription_load(sub_url);
         }
 
         cx.spawn(async move |this, cx| {
@@ -563,6 +579,8 @@ impl AppState {
             }
         })
         .detach();
+
+        app.resume_feed_server();
 
         #[cfg(debug_assertions)]
         app.apply_debug_overrides();
@@ -702,6 +720,16 @@ impl AppState {
         self.job.is_some() || self.aux_job.is_some()
     }
 
+    /// 订阅还在载入，手头又没有可用的 WS 节点：这时开始验证只能退化为 TLS 基础验证，先等一等。
+    /// 有上次成功载入的节点时不用等，后台刷新不影响任何任务。
+    fn awaiting_nodes(&self) -> bool {
+        self.sub_loading
+            && !self
+                .verify_nodes
+                .iter()
+                .any(|node| node.transport.eq_ignore_ascii_case("ws"))
+    }
+
     fn on_tick(&mut self, cx: &mut Context<Self>) {
         if self
             .reset_armed_at
@@ -731,13 +759,19 @@ impl AppState {
         if !auto_daily_due(&today, now_hm, &self.settings.last_auto_date, at) {
             return;
         }
-        if self.busy() {
+        if self.busy() || self.awaiting_nodes() {
             if !self.auto_daily_waiting {
                 self.auto_daily_waiting = true;
                 self.notify_status(
                     format!(
-                        "已到每日优选时间 {:02}:{:02}，当前任务结束后开始",
-                        at.0, at.1
+                        "已到每日优选时间 {:02}:{:02}，{}",
+                        at.0,
+                        at.1,
+                        if self.busy() {
+                            "当前任务结束后开始"
+                        } else {
+                            "订阅节点载入后开始"
+                        }
                     ),
                     Tone::Muted,
                     cx,
@@ -1203,6 +1237,10 @@ impl AppState {
             }
         }
         self.page = page;
+        if matches!(page, Page::Verify | Page::Daily) {
+            // 用户可能刚装好代理软件；只读注册表 / 应用目录，开销可忽略。
+            self.proxy_clients = crate::proxy_clients::detect();
+        }
         self.reset_page_scroll();
         self.focus_page_input(page, window, cx);
         cx.notify();

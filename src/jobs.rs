@@ -25,7 +25,6 @@ pub enum JobKind {
     Daily,
     Asn,
     Pool,
-    Subscription,
     PoolRebuild,
     Probe,
 }
@@ -39,7 +38,6 @@ impl JobKind {
             JobKind::Daily => "每日优选",
             JobKind::Asn => "ASN 查询",
             JobKind::Pool => "官方候选池",
-            JobKind::Subscription => "订阅",
             JobKind::PoolRebuild => "段池重建",
             JobKind::Probe => "段池粗测",
         }
@@ -98,8 +96,13 @@ pub enum JobEvent {
         source: String,
     },
     SubscriptionReady {
+        url: String,
         nodes: Vec<VlessNode>,
-        source: String,
+    },
+    /// 订阅拉取（含重试）最终失败。
+    SubscriptionFailed {
+        url: String,
+        error: String,
     },
     PoolRebuilt {
         count: usize,
@@ -387,21 +390,29 @@ pub fn spawn_official_pool(total: usize, tx: UnboundedSender<JobEvent>) {
     });
 }
 
+/// 在后台拉取订阅（失败会自动重试），不占用任务槽：订阅时常要等上几十秒，
+/// 期间扫描、测速照常可用。结束时必定发出 `SubscriptionReady` 或 `SubscriptionFailed`。
 pub fn spawn_subscription(url: String, tx: UnboundedSender<JobEvent>) {
-    spawn_aux(JobKind::Subscription, tx.clone(), async move {
-        match http::fetch_subscription(&url, Duration::from_secs(20)).await {
-            Ok(nodes) => {
-                let ws_count = nodes
-                    .iter()
-                    .filter(|node| node.transport.eq_ignore_ascii_case("ws"))
-                    .count();
-                let _ = tx.send(JobEvent::SubscriptionReady {
-                    source: format!("{} 个节点（{} 个 ws）", nodes.len(), ws_count),
-                    nodes,
-                });
-            }
-            Err(err) => send_aux_error(&tx, JobKind::Subscription, err),
+    runtime().spawn(async move {
+        let fetch_url = url.clone();
+        let handle = tokio::spawn(async move {
+            http::fetch_subscription(&fetch_url, Duration::from_secs(20)).await
+        });
+        let event = match handle.await {
+            Ok(Ok(nodes)) => JobEvent::SubscriptionReady { url, nodes },
+            Ok(Err(err)) => JobEvent::SubscriptionFailed {
+                url,
+                error: format!("{err:#}"),
+            },
+            Err(err) => JobEvent::SubscriptionFailed {
+                url,
+                error: format!("订阅任务异常：{err}"),
+            },
+        };
+        if let JobEvent::SubscriptionFailed { error, .. } = &event {
+            storage::log_line(&format!("订阅失败：{error}"));
         }
+        let _ = tx.send(event);
     });
 }
 

@@ -41,7 +41,7 @@ Finding fast Cloudflare IPs usually means juggling several scripts: scan, speed-
 | **Auto-optimize** (start page) | Runs *scan → speed test → verify* once or daily, and keeps the Top N. The range pool advances each round, so every run covers new ranges |
 | **Scan IP** | Finds reachable Cloudflare addresses in CIDRs, single IPs, ASN prefixes or suggested ranges, with colo and handshake latency |
 | **Speed ranking** | Sequential download tests (quick screen and multi-round fine test), ranked by median speed, with a speed histogram and a latency/speed scatter plot |
-| **Availability check** | Full tunnel check through VLESS + WebSocket subscription nodes, or a basic TLS check without nodes |
+| **Availability check** | Full tunnel check through VLESS + WebSocket subscription nodes (`vless://` links or a Clash profile), or a basic TLS check without nodes; passing IPs import into your proxy client in one click |
 | **Range pool** (advanced) | Pick a pool strategy (balanced rotation, network-ranked, sequential), move the start point, and probe how each range performs on your network |
 | **History** (advanced) | Past runs, plus a Top 10 rank and speed comparison between the last two speed tests |
 
@@ -50,6 +50,7 @@ Also included:
 - 🔗 **One-click next step.** *Next: speed test* and *Next: verify* load the results and start the next step.
 - 💾 **Results survive restarts.** The latest scan, speed test and verification results come back on launch.
 - 📋 **Copy and export.** Click a row to copy `IP:port`, copy the whole Top N at once, and export TXT or CSV (opens in Excel).
+- 📥 **Import into your proxy client.** After a tunnel check, the passing IPs are applied to your subscription node and imported into a local Clash Verge, Karing, Stash, FlClash or similar client in one click. You can also copy the local subscription URL or the node links. The client picks up each new auto-optimize round when it updates the subscription.
 - ⏰ **Reliable scheduling.** A run starts once the time has passed and today has no run yet. A missed time is caught up, a busy app queues the run, and a scheduled run never switches your page.
 - 🎨 **Themes.** Forest, Mint, Bee and Parchment, each light, dark or following the system, with UI scaling from 90% to 125%.
 - ⌨️ **Keyboard-first.** Shortcuts for pages, start/stop and focus navigation.
@@ -102,7 +103,7 @@ The executable isn't code-signed, so SmartScreen warns about new files. Click **
 
 1. **扫描 IP** (*Scan IP*): paste a range such as `104.16.0.0/24`, or click a suggested range, then click **开始扫描** (*Start scan*).
 2. **测速排行** (*Speed ranking*): click **下一步：测速** (*Next: speed test*) on the scan results. The 20 lowest-latency hits are tested one by one.
-3. **可用性验证** (*Availability check*): click **下一步：验证** (*Next: verify*) on the speed results. For a full tunnel check, add a subscription link under *订阅设置* (*Subscription settings*) first.
+3. **可用性验证** (*Availability check*): click **下一步：验证** (*Next: verify*) on the speed results. For a full tunnel check, add a subscription link under *订阅设置* (*Subscription settings*) first. Once IPs pass, click your client under *导入代理软件* (*Import into proxy client*) below the results.
 
 > Advanced mode (sidebar switch or `Ctrl+Shift+A`) shows every parameter, the range pool and history. Both modes share one set of parameters, and the defaults are the recommended values.
 
@@ -149,7 +150,8 @@ Use `⌘` instead of `Ctrl` on macOS.
   
   *数据目录* (*Data folder*) at the bottom of the sidebar opens it.
 - The app only talks to the IPs under test, Cloudflare's public endpoints (IP range lists, `/cdn-cgi/trace`, `speed.cloudflare.com`, `cp.cloudflare.com`), RIPE Stat (ASN prefixes), and any subscription link you enter.
-- No analytics, telemetry or auto-update. Subscription links and node details are stored only in your local `settings.json`.
+- Once you import into a proxy client, the app serves a subscription URL on `127.0.0.1` for the client's updates. It accepts local requests only and the URL contains a random token. While the app isn't running, the client keeps the nodes it imported last.
+- No analytics, telemetry or auto-update. Subscription links and node details stay on your machine: the link in `settings.json`, and the nodes from the last successful load in `subscription.json` (used when a fetch fails).
 
 ## Building from source
 

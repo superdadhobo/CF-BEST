@@ -6,6 +6,7 @@ use super::{AppState, Page};
 use crate::core::model::DailyVerification;
 use crate::core::model::ParamGroup;
 use crate::core::pool;
+use crate::core::sub_server::FeedSource;
 use crate::jobs::JobKind;
 use crate::theme;
 use crate::ui::tooltip::tooltip;
@@ -711,7 +712,8 @@ impl AppState {
                     .overflow_hidden()
                     .child(widgets::table_header(&columns))
                     .child(top_body),
-            );
+            )
+            .children(self.render_proxy_import(FeedSource::Daily, cx));
 
         if advanced {
             let mut page = div()

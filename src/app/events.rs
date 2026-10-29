@@ -345,23 +345,47 @@ impl AppState {
                     cx,
                 );
             }
-            JobEvent::SubscriptionReady { nodes, source } => {
-                let count = nodes.len();
-                // 与 verify::node_for_ips 一致：只有 WS 节点用于验证 IP，其余传输改用内置探测。
-                self.verify_node_source = match nodes
-                    .iter()
-                    .find(|node| node.transport.eq_ignore_ascii_case("ws"))
-                {
-                    Some(node) => format!("{source} · {}", node.summary()),
-                    None if nodes.is_empty() => format!("{source} · 无可用节点"),
-                    None => format!("{source} · 无 WS 节点，验证 IP 时只做 TLS 基础验证"),
+            JobEvent::SubscriptionReady { url, nodes } => {
+                self.sub_loading = false;
+                self.sub_cache = SubscriptionCache {
+                    url,
+                    time: Local::now().format("%Y-%m-%d %H:%M").to_string(),
+                    nodes: nodes.clone(),
                 };
-                self.verify_nodes = nodes;
+                storage::save_subscription_cache(&self.paths, &self.sub_cache);
+                let ws_count = nodes
+                    .iter()
+                    .filter(|node| node.transport.eq_ignore_ascii_case("ws"))
+                    .count();
+                let count = nodes.len();
+                self.apply_subscription_nodes(nodes, None);
                 self.notify_status(
-                    format!("订阅已载入：{source}，共 {count} 个节点"),
+                    format!("订阅已载入：{count} 个节点（{ws_count} 个 ws）"),
                     Tone::Green,
                     cx,
                 );
+            }
+            JobEvent::SubscriptionFailed { url, error } => {
+                self.sub_loading = false;
+                // 同一订阅上次成功载入过：继续用那批节点，隧道验证与导入不受影响。
+                match self.sub_cache.nodes_for(&url).map(<[_]>::to_vec) {
+                    Some(nodes) => {
+                        let time = self.sub_cache.time.clone();
+                        let count = nodes.len();
+                        self.apply_subscription_nodes(
+                            nodes,
+                            Some(&format!("沿用 {time} 载入的结果")),
+                        );
+                        self.notify_status(
+                            format!(
+                                "订阅拉取失败，继续使用 {time} 载入的 {count} 个节点（{error}）"
+                            ),
+                            Tone::Amber,
+                            cx,
+                        );
+                    }
+                    None => self.fail(format!("订阅失败：{error}"), cx),
+                }
             }
             JobEvent::PoolRebuilt { count, source } => {
                 self.pool_segments = storage::load_pool(&self.paths);
@@ -467,6 +491,10 @@ impl AppState {
                 self.cancel = None;
                 if kind == JobKind::Scan && self.scan_progress.total > 0 {
                     self.scan_progress.label = self.scan_note.clone();
+                }
+                // 验证 / 自动优选的结果此时才完整，交给本机订阅服务。
+                if matches!(kind, JobKind::Verify | JobKind::Daily) {
+                    self.publish_proxy_feeds();
                 }
             }
             JobEvent::AuxDone => {

@@ -201,16 +201,21 @@ pub fn kbd(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
+/// Ghost 按钮的底色：悬停色 fill-secondary 的 60%。浅色主题里它是半透明黑、深色主题里是实色，
+/// 按比例取淡才能在所有主题下都比悬停浅一级，并且放在卡片或嵌套分组上都看得出来。
+fn ghost_fill() -> Rgba {
+    let mut fill = theme::fill_secondary();
+    fill.a *= 0.6;
+    fill
+}
+
 fn button_inner(label: SharedString, icon_name: Option<&'static str>, kind: ButtonKind) -> Div {
     let (bg, fg, border) = match kind {
         ButtonKind::Primary => (theme::accent(), theme::on_accent(), theme::accent()),
         // Qoder 的 outline 变体：bg-base + border-tertiary，悬停 fill-secondary。
         ButtonKind::Secondary => (theme::input_bg(), theme::text(), theme::border()),
-        ButtonKind::Ghost => (
-            gpui::rgba(0x00000000),
-            theme::muted(),
-            gpui::rgba(0x00000000),
-        ),
+        // 文字按钮也铺一层淡底色，只有文字时显得突兀；悬停时加深为 fill-secondary。
+        ButtonKind::Ghost => (ghost_fill(), theme::muted(), gpui::rgba(0x00000000)),
         ButtonKind::Danger => (theme::red_dim(), theme::red(), theme::red_dim()),
         ButtonKind::Soft => (
             theme::accent_dim(),

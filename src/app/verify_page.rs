@@ -6,6 +6,7 @@ use crate::theme::px;
 
 use super::columns::TableId;
 use super::{AppState, Page};
+use crate::core::sub_server::FeedSource;
 use crate::jobs::JobKind;
 use crate::theme;
 use crate::ui::widgets::{self, ButtonKind, Tone};
@@ -44,7 +45,7 @@ impl AppState {
             } else {
                 node.host.clone()
             }
-        } else if self.aux_job == Some(JobKind::Subscription) {
+        } else if self.sub_loading {
             "正在拉取订阅…".to_string()
         } else {
             "TLS 基础验证".to_string()
@@ -227,7 +228,7 @@ impl AppState {
                         .gap_3()
                         .child(widgets::field("订阅链接", self.sub_url.clone()))
                         .child(
-                            widgets::button_with_state("load-subscription", "拉取订阅", "refresh", ButtonKind::Secondary, busy)
+                            widgets::button_with_state("load-subscription", if self.sub_loading { "拉取中…" } else { "拉取订阅" }, "refresh", ButtonKind::Secondary, self.sub_loading)
                                 .on_click(cx.listener(Self::load_subscription)),
                         ),
                 )
@@ -596,7 +597,8 @@ impl AppState {
                             .child(div().flex_1().child(widgets::plain_header_cell("详情")))
                     })
                     .child(table_body),
-            );
+            )
+            .children(self.render_proxy_import(FeedSource::Verify, cx));
 
         let top_section = match (simple_top, node_card, advanced_target_card) {
             (Some(simple), _, _) => simple,

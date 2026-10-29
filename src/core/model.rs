@@ -73,6 +73,9 @@ pub struct VlessNode {
     pub path: String,
     pub host: String,
     pub sni: String,
+    /// 分享链接里的全部查询参数（解码后，按原顺序）。生成优选节点时原样带上 fp、alpn 等字段。
+    #[serde(default)]
+    pub params: Vec<(String, String)>,
 }
 
 impl VlessNode {
@@ -195,6 +198,26 @@ pub struct LastScan {
     pub hits: Vec<ScanHit>,
 }
 
+/// 最近一次成功拉取的订阅节点。订阅地址时常连不上，拉取失败时沿用这份结果，
+/// 隧道验证与「导入代理软件」不至于整轮退化为 TLS 基础验证。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubscriptionCache {
+    /// 拉取时的订阅地址；换了订阅就不再沿用。
+    pub url: String,
+    pub time: String,
+    pub nodes: Vec<VlessNode>,
+}
+
+impl SubscriptionCache {
+    /// `url` 对应的上次结果；地址不同或没有节点时为 None。
+    pub fn nodes_for(&self, url: &str) -> Option<&[VlessNode]> {
+        let url = url.trim();
+        (!url.is_empty() && self.url.trim() == url && !self.nodes.is_empty())
+            .then_some(self.nodes.as_slice())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DailyRun {
     pub time: String,
@@ -258,6 +281,12 @@ pub struct Settings {
     pub probe_concurrency: u32,
     pub probe_top: usize,
     pub probe_seconds: u64,
+    /// 导入过代理软件后为 true：此后每次启动都开启本机订阅服务，客户端可以按时更新。
+    pub proxy_feed_enabled: bool,
+    /// 本机订阅服务的端口，0 表示尚未分配。客户端保存的订阅地址含端口，分配后尽量不变。
+    pub proxy_feed_port: u16,
+    /// 本机订阅地址中的随机令牌，其他程序与网页猜不到地址。
+    pub proxy_feed_token: String,
 }
 
 impl Default for Settings {
@@ -293,6 +322,9 @@ impl Default for Settings {
             probe_concurrency: 60,
             probe_top: 8,
             probe_seconds: 2,
+            proxy_feed_enabled: false,
+            proxy_feed_port: 0,
+            proxy_feed_token: String::new(),
         }
     }
 }
@@ -411,6 +443,53 @@ mod tests {
             assert_eq!(entry.verification.known(), Some(verification));
             assert!(entry.verification.passed_label().ends_with("通过"));
         }
+    }
+
+    #[test]
+    fn subscription_cache_only_serves_the_same_url() {
+        let node = VlessNode {
+            name: "HK".into(),
+            uuid: "b831381d-6324-4d53-ad4f-8cda48b30811".into(),
+            addr: "edge.example.com".into(),
+            port: 443,
+            transport: "ws".into(),
+            path: "/?ed=2048".into(),
+            host: "edge.example.com".into(),
+            sni: "edge.example.com".into(),
+            params: vec![("fp".into(), "chrome".into())],
+        };
+        let cache = SubscriptionCache {
+            url: "https://sub.example.com/u".into(),
+            time: "2026-10-29 08:10".into(),
+            nodes: vec![node],
+        };
+        assert_eq!(
+            cache
+                .nodes_for(" https://sub.example.com/u ")
+                .map(<[_]>::len),
+            Some(1)
+        );
+        assert!(cache.nodes_for("https://sub.example.com/other").is_none());
+        assert!(cache.nodes_for("").is_none());
+        assert!(SubscriptionCache::default().nodes_for("").is_none());
+        let empty = SubscriptionCache {
+            nodes: Vec::new(),
+            ..cache.clone()
+        };
+        assert!(empty.nodes_for("https://sub.example.com/u").is_none());
+
+        // 落盘再读回，分享链接参数也要保留，生成的节点才与原订阅一致。
+        let restored: SubscriptionCache =
+            serde_json::from_str(&serde_json::to_string(&cache).unwrap()).unwrap();
+        let node = &restored.nodes_for("https://sub.example.com/u").unwrap()[0];
+        assert_eq!(node.path, "/?ed=2048");
+        assert_eq!(node.params, vec![("fp".to_string(), "chrome".to_string())]);
+        // 旧版本写下的节点没有 params 字段。
+        let legacy: VlessNode = serde_json::from_str(
+            r#"{"name":"a","uuid":"u","addr":"h","port":443,"transport":"ws","path":"/","host":"h","sni":"h"}"#,
+        )
+        .unwrap();
+        assert!(legacy.params.is_empty());
     }
 
     #[test]

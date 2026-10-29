@@ -573,6 +573,7 @@ mod tests {
                         path: "/cdn-cgi/trace".into(),
                         host: "cp.cloudflare.com".into(),
                         sni: "cp.cloudflare.com".into(),
+                        params: Vec::new(),
                     },
                     strategy: "sequential".into(),
                     scores: Vec::new(),

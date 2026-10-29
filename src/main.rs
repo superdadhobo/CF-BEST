@@ -5,6 +5,7 @@ mod assets;
 mod autostart;
 mod core;
 mod jobs;
+mod proxy_clients;
 mod taskbar;
 mod theme;
 mod tray;

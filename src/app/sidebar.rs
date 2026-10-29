@@ -55,6 +55,7 @@ impl AppState {
         self.history = storage::load_history(&self.paths);
         self.daily_state = storage::load_daily_state(&self.paths);
         self.daily_top_rows = self.daily_state.last_top.clone();
+        self.publish_proxy_feeds();
         self.notify_status("历史记录已刷新", Tone::Green, cx);
     }
 
@@ -296,11 +297,13 @@ impl AppState {
         let collapsed = self.settings.sidebar_collapsed;
         let job = self.job;
         let advanced = self.settings.advanced_mode;
-        let busy = job.is_some() || self.aux_job.is_some();
+        let busy = job.is_some() || self.aux_job.is_some() || self.sub_loading;
         let (dot_tone, job_label) = if let Some(kind) = job {
             (Tone::Accent, format!("{}运行中", kind.label()))
         } else if let Some(kind) = self.aux_job {
             (Tone::Blue, format!("{}进行中", kind.label()))
+        } else if self.sub_loading {
+            (Tone::Blue, "订阅载入中".to_string())
         } else {
             (Tone::Green, "空闲".to_string())
         };
