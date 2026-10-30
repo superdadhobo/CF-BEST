@@ -169,8 +169,7 @@ impl Theme {
     }
 }
 
-/// 一套主题的全部颜色（RGBA）。数值由 `tools/sync_qoder_tokens.py` 从 Qoder Design Kit
-/// 的 `tokens.json` 生成到 `theme_tokens.rs`，语义对应见生成脚本中的字段说明。
+/// 一套主题的全部颜色（RGBA）。数值源自 Qoder Design Kit 的 `tokens.json`，存放在 `theme_tokens.rs`。
 #[derive(Clone, Copy)]
 pub(crate) struct Palette {
     canvas: u32,

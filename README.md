@@ -252,7 +252,7 @@ src/
   ui/                通用组件：按钮、输入框、提示气泡、图表
   jobs.rs            后台任务调度（tokio）与事件
   theme.rs           主题、界面缩放与设计令牌
-  theme_tokens.rs    由 tools/sync_qoder_tokens.py 生成的配色（不要手改）
+  theme_tokens.rs    各主题配色数值（源自 Qoder Design Kit）
   tray.rs            系统托盘（Windows）
   taskbar.rs         任务栏进度（Windows）
   autostart.rs       开机自启（Windows 注册表 / macOS LaunchAgent）

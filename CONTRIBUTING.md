@@ -41,7 +41,7 @@ cargo run --release  # 接近发布版的性能
 - `src/core/` 是与界面无关的业务逻辑（扫描、测速、验证、存储），应能独立测试，不依赖 GPUI。
 - `src/app/` 是应用状态与页面，`src/ui/` 是可复用组件。
 - 平台相关代码放在 `#[cfg(target_os = "...")]` 后面，并为其他平台提供空实现。能用 `cfg!()` 表达式时优先用它，这样所有平台都会编译检查到这段代码。
-- `src/theme_tokens.rs` 由 `tools/sync_qoder_tokens.py` 生成，不要手改。
+- `src/theme_tokens.rs` 是各主题的配色数值（最初从 Qoder Design Kit 的 `tokens.json` 生成），调整配色时直接改这个文件。
 
 ## 发布新版本
 
